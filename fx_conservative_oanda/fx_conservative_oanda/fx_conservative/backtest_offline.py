@@ -4,7 +4,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Tuple, List
 from .indicators import ema, atr, adx, rsi_wilder, donchian
-from .oanda_adapter import OandaAdapter, PAIR_MAP, USD_IS_QUOTE
+from .symbols import instrument_for_symbol, usd_is_quote
 
 @dataclass
 class BTConfig:
@@ -24,10 +24,12 @@ class BTConfig:
     correl_window: int = 90
     correl_threshold: float = 0.80
     max_positions: int = 5
-    slippage_pips: float = 0.5  # Slippage en pips
+    # Para acciones, modelamos slippage como USD absoluto (no "pips").
+    slippage_abs: float = 0.01
     commission_pct: float = 0.00002  # Comisión 0.002%
 
-def _usd_is_quote(pair): return USD_IS_QUOTE[pair]
+def _usd_is_quote(symbol: str) -> bool:
+    return bool(usd_is_quote(symbol))
 
 def _size_units(pair, entry, stop, equity, risk_frac):
     D = abs(entry - stop)
@@ -46,35 +48,30 @@ def _size_units(pair, entry, stop, equity, risk_frac):
         units = units * (max_notional / current_notional)
     return max(0, int(np.floor(units)))
 
-def _apply_slippage(price: float, side: str, slippage_pips: float, pair: str) -> float:
+def _apply_slippage(price: float, side: str, slippage_abs: float, symbol: str) -> float:
     """
     Aplica slippage realista a la ejecución.
     Para LONG, el fill es peor (más alto), para SHORT es peor (más bajo).
     """
-    pip_size = 0.0001 if "JPY" not in pair else 0.01
-    slippage = slippage_pips * pip_size
-    
-    if side == "long":
-        return price + slippage
-    else:
-        return price - slippage
+    s = float(slippage_abs)
+    return price + s if side == "long" else price - s
 
-def _calculate_commission(units: float, price: float, commission_pct: float, pair: str) -> float:
+def _calculate_commission(units: float, price: float, commission_pct: float, symbol: str) -> float:
     """
     Calcula comisión en USD basada en el notional.
     """
-    if _usd_is_quote(pair):
+    if _usd_is_quote(symbol):
         notional = abs(units) * price
     else:
         notional = abs(units)
     return notional * commission_pct
 
-def offline_backtest(adapter: OandaAdapter, pairs: List[str], start: str, end: str,
+def offline_backtest(adapter, pairs: List[str], start: str, end: str,
                      spreads: Dict[str,float], cfg: BTConfig, alignment_tz="America/New_York", daily_hour=17):
     # Descargar datos
     data = {}
     for p in pairs:
-        ins = PAIR_MAP[p]
+        ins = instrument_for_symbol(p)
         df = adapter.candles_between(ins, start, end, granularity="D",
                                      alignment_tz=alignment_tz, daily_hour=daily_hour, price="M")
         df["EMA50"] = ema(df["Close"], cfg.ema_fast)

@@ -644,8 +644,9 @@ class SystemDiagnostics:
                 metric_value=0
             ))
         
-        # Verificar variables de entorno
-        required_env_vars = ["OANDA_ACCOUNT", "OANDA_TOKEN", "OANDA_ENV"]
+        # Verificar variables de entorno (Alpaca)
+        required_env_vars = ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"]
+        impact_msg = "AlpacaAdapter no puede conectarse a la API"
         missing_vars = [v for v in required_env_vars if not os.environ.get(v)]
         
         if missing_vars:
@@ -654,7 +655,7 @@ class SystemDiagnostics:
                 category="SYSTEM",
                 title="Variables de entorno faltantes",
                 description=f"Faltan: {', '.join(missing_vars)}",
-                impact="OandaAdapter no puede conectarse a la API",
+                impact=impact_msg,
                 recommendation="Configurar variables en .env o sistema operativo",
                 metric_value=len(missing_vars)
             ))
@@ -676,7 +677,7 @@ class SystemDiagnostics:
                         title="Alta tasa de errores de API",
                         description=f"{error_rate:.1%} de órdenes con errorMessage",
                         impact="Problemas de conectividad o validación",
-                        recommendation="Revisar logs de OandaAdapter, verificar circuit breaker y retry logic",
+                        recommendation="Revisar logs, conectividad y validaciones antes de enviar ordenes",
                         metric_value=error_rate,
                         threshold=0.05
                     ))

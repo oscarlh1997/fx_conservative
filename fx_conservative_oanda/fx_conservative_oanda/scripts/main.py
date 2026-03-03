@@ -5,17 +5,21 @@ import pandas as pd
 
 from fx_conservative.config import load_config
 from fx_conservative.logger import TradeLogger
-from fx_conservative.oanda_adapter import OandaAdapter
+from fx_conservative.alpaca_adapter import AlpacaAdapter
 from fx_conservative.strategy import FXConservativeLive
 from fx_conservative.utils_time import next_daily_close_eu_madrid
 from fx_conservative.metrics import compute_trade_metrics, compute_equity_metrics
 from fx_conservative.backtest_offline import offline_backtest, BTConfig
-from fx_conservative.oanda_adapter import PAIR_MAP
+
+
+def make_adapter():
+    return AlpacaAdapter()
+
 
 def cmd_run_once(args):
     cfg = load_config(args.config)
     logger = TradeLogger(cfg.log_dir, cfg.state_path)
-    adp = OandaAdapter()
+    adp = make_adapter()
     strat = FXConservativeLive(adp, cfg, logger)
 
     # Sincroniza transacciones pendientes antes de operar (para cerrar trades del log si hubo SL/TP)
@@ -31,10 +35,10 @@ def cmd_run_once(args):
 def cmd_daemon(args):
     cfg = load_config(args.config)
     logger = TradeLogger(cfg.log_dir, cfg.state_path)
-    adp = OandaAdapter()
+    adp = make_adapter()
     strat = FXConservativeLive(adp, cfg, logger)
 
-    print("Daemon iniciado. Esperando a cada cierre D1 (17:00 NY). Ctrl+C para salir.")
+    print("Daemon iniciado. Esperando a cada cierre D1 (segun daily_alignment_hour en NY). Ctrl+C para salir.")
     while True:
         try:
             target = next_daily_close_eu_madrid(cfg.daily_alignment_hour)
@@ -42,7 +46,7 @@ def cmd_daemon(args):
             wait_s = max(5, (target - now).total_seconds())
             print(f"Próximo ciclo a: {target} (Madrid). Esperando {int(wait_s)} s...")
             import time; time.sleep(wait_s)
-            # Asegurar que la vela está marcada como 'complete' en OANDA
+            # Pausa breve para asegurar que ya existe la barra diaria
             time.sleep(10)
             # Sincroniza transacciones (cierres) antes del nuevo ciclo
             try:
@@ -71,7 +75,7 @@ def cmd_daemon(args):
 def cmd_update_trailing(args):
     cfg = load_config(args.config)
     logger = TradeLogger(cfg.log_dir, cfg.state_path)
-    adp = OandaAdapter()
+    adp = make_adapter()
     strat = FXConservativeLive(adp, cfg, logger)
     res = strat.update_all_trailings()
     print(res)
@@ -87,7 +91,7 @@ def cmd_metrics(args):
 
 def cmd_backtest(args):
     cfg = load_config(args.config)
-    adp = OandaAdapter()
+    adp = AlpacaAdapter()
     bt_cfg = BTConfig(
         risk_per_trade=cfg.risk_per_trade, total_risk_cap=cfg.total_risk_cap,
         ema_fast=cfg.ema_fast, ema_slow=cfg.ema_slow, donchian_n=cfg.donchian_n, adx_thresh=cfg.adx_thresh,
@@ -106,14 +110,14 @@ def cmd_backtest(args):
     print("Backtest terminado. Archivos guardados en", out_dir)
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="FX Conservative (OANDA) - Runner")
+    ap = argparse.ArgumentParser(description="FX Conservative (Alpaca) - Runner")
     sub = ap.add_subparsers()
 
     p1 = sub.add_parser("run-once", help="Ejecuta un ciclo diario una vez (opera con la última vela cerrada)")
     p1.add_argument("--config", default="config/config.yaml")
     p1.set_defaults(func=cmd_run_once)
 
-    p2 = sub.add_parser("daemon", help="Ejecuta el ciclo a cada cierre D1 (17:00 NY)")
+    p2 = sub.add_parser("daemon", help="Ejecuta el ciclo a cada cierre D1 (segun daily_alignment_hour en NY)")
     p2.add_argument("--config", default="config/config.yaml")
     p2.set_defaults(func=cmd_daemon)
 
@@ -125,7 +129,7 @@ if __name__ == "__main__":
     p4.add_argument("--config", default="config/config.yaml")
     p4.set_defaults(func=cmd_metrics)
 
-    p5 = sub.add_parser("backtest", help="Backtest offline con históricos D1 de OANDA")
+    p5 = sub.add_parser("backtest", help="Backtest offline (market data de Alpaca)")
     p5.add_argument("--config", default="config/config.yaml")
     p5.add_argument("--start", required=True, help="YYYY-MM-DD")
     p5.add_argument("--end", required=True, help="YYYY-MM-DD")

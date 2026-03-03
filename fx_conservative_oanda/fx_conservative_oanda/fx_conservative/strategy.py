@@ -3,11 +3,11 @@ import math, json, os
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta, timezone
 
 from .indicators import ema, atr, adx, rsi_wilder, donchian
-from .oanda_adapter import OandaAdapter, PAIR_MAP, USD_IS_QUOTE
+from .symbols import instrument_for_symbol, symbol_for_instrument, usd_is_quote
 from .logger import TradeLogger
 from .utils_time import parse_any_ts
 
@@ -26,14 +26,14 @@ class Signal:
     rsi2: float
 
 class FXConservativeLive:
-    def __init__(self, adapter: OandaAdapter, cfg, logger: TradeLogger):
+    def __init__(self, adapter: Any, cfg, logger: TradeLogger):
         self.adp = adapter
         self.cfg = cfg
         self.log = logger
 
     # ------------ Datos e indicadores ------------
     def build_df(self, pair: str, count: int = 1200) -> pd.DataFrame:
-        ins = PAIR_MAP[pair]
+        ins = instrument_for_symbol(pair)
         df = self.adp.candles(
             instrument=ins, granularity="D", count=count,
             alignment_tz=self.cfg.alignment_tz, daily_hour=self.cfg.daily_alignment_hour, price="M"
@@ -141,7 +141,7 @@ class FXConservativeLive:
 
     # ------------ Sizing y utilidades ------------
     def _usd_is_quote(self, pair:str) -> bool:
-        return USD_IS_QUOTE[pair]
+        return usd_is_quote(pair)
 
     def size_units(self, pair: str, entry: float, stop: float, equity: float, risk_frac: float) -> int:
         """
@@ -193,9 +193,7 @@ class FXConservativeLive:
         for t in trades:
             instrument = t["instrument"]
             # mapa inverso a 'pair'
-            pair = next((k for k,v in PAIR_MAP.items() if v==instrument), None)
-            if not pair: 
-                continue
+            pair = symbol_for_instrument(instrument)
             
             units = float(t.get("currentUnits", 0))
             if abs(units) < 1:  # Posición cerrada o insignificante
@@ -287,8 +285,7 @@ class FXConservativeLive:
         open_trades = self.adp.list_trades()
         open_dir = {}
         for t in open_trades:
-            pair = next((k for k,v in PAIR_MAP.items() if v==t["instrument"]), None)
-            if not pair: continue
+            pair = symbol_for_instrument(t["instrument"])
             side = "long" if float(t.get("currentUnits",0))>0 else "short"
             open_dir[pair] = side
 
@@ -311,8 +308,7 @@ class FXConservativeLive:
         # 7) Apalancamiento actual aprox
         notional_open = 0.0
         for t in open_trades:
-            pair = next((k for k,v in PAIR_MAP.items() if v==t["instrument"]), None)
-            if not pair: continue
+            pair = symbol_for_instrument(t["instrument"])
             price = last_close_map.get(pair, float(t.get("price", 0.0)))
             units = abs(float(t.get("currentUnits", 0.0)))
             notional_open += self.notional_usd(pair, units, price)
@@ -355,7 +351,7 @@ class FXConservativeLive:
 
             # Enviar orden
             resp = self.adp.place_bracket_market(
-                instrument=PAIR_MAP[sig.pair], side=sig.side, units=units,
+                instrument=instrument_for_symbol(sig.pair), side=sig.side, units=units,
                 sl_price=stop, tp_price=tp,
                 client_tag="fx_cons_v1", client_comment=f"{sig.kind}"
             )
@@ -393,6 +389,39 @@ class FXConservativeLive:
             except Exception:
                 pass
 
+            # Fallback para brokers que no devuelven un "fill" tipo OANDA (ej: Alpaca).
+            # Guardamos una "entrada pendiente" identificada por el order id.
+            try:
+                if isinstance(resp, dict):
+                    oid = resp.get("id")
+                    sym = resp.get("symbol") or resp.get("instrument")
+                    filled_avg = resp.get("filled_avg_price")
+                else:
+                    oid = getattr(resp, "id", None)
+                    sym = getattr(resp, "symbol", None) or getattr(resp, "instrument", None)
+                    filled_avg = getattr(resp, "filled_avg_price", None)
+
+                if oid:
+                    st = self.log.load_state()
+                    entries = st.get("entries", {})
+                    if str(oid) not in entries:
+                        entries[str(oid)] = {
+                            "pair": sig.pair,
+                            "side": sig.side,
+                            "units": units,
+                            "entry_price": float(filled_avg) if filled_avg not in (None, "") else None,
+                            "entry_hint": float(sig.close),
+                            "initial_sl": float(stop),
+                            "initial_tp": float(tp),
+                            "entry_ts": pd.Timestamp.utcnow().isoformat(),
+                            "instrument": sym or instrument_for_symbol(sig.pair),
+                        }
+                        st["entries"] = entries
+                        st["last_transaction_id"] = self.adp.last_transaction_id()
+                        self.log.save_state(st)
+            except Exception:
+                pass
+
             # Actualizar notional_open y risk_cupo
             notional_open += notional_add
             risk_cupo = max(0.0, risk_cupo - equity * risk_this)
@@ -421,9 +450,7 @@ class FXConservativeLive:
         
         for t in trades:
             ins = t["instrument"]
-            pair = next((k for k,v in PAIR_MAP.items() if v==ins), None)
-            if not pair: 
-                continue
+            pair = symbol_for_instrument(ins)
             
             atr_now = latest_atr.get(pair)
             if atr_now is None: 
@@ -473,16 +500,8 @@ class FXConservativeLive:
                     
                     if should_update:
                         try:
-                            # Actualizar a stop loss fijo en breakeven
-                            data = {
-                                "stopLoss": {
-                                    "price": f"{breakeven_price:.5f}",
-                                    "timeInForce": "GTC"
-                                }
-                            }
-                            from oandapyV20.endpoints.trades import TradeCRCDO
-                            r = TradeCRCDO(self.adp.account_id, tradeID=t["id"], data=data)
-                            self.adp.api.request(r)
+                            # Delegar al adapter: OANDA usa TradeCRCDO, otros brokers pueden hacer replace de la orden SL.
+                            self.adp.set_stop_loss(t["id"], breakeven_price)
                             moved_to_breakeven += 1
                             continue  # No aplicar trailing si movimos a BE
                         except Exception as e:
@@ -511,6 +530,15 @@ class FXConservativeLive:
 
     # ------------ Sincronizar transacciones y cerrar trades en log ------------
     def sync_transactions(self):
+        # If the broker adapter knows how to sync, delegate (Alpaca, etc.).
+        adp_sync = getattr(self.adp, "sync_transactions", None)
+        if callable(adp_sync):
+            try:
+                return adp_sync(self.log)
+            except TypeError:
+                # Adapter has a different signature; fall back to legacy OANDA flow.
+                pass
+
         st = self.log.load_state()
         last_id = st.get("last_transaction_id")
 
@@ -557,7 +585,7 @@ class FXConservativeLive:
                     # riesgo inicial en USD
                     D = (entry_price - initial_sl) if side=="long" else (initial_sl - entry_price)
                     D = max(D, 1e-12)
-                    if USD_IS_QUOTE[pair]:
+                    if self._usd_is_quote(pair):
                         risk_usd = abs(float(ent["units"])) * D
                     else:
                         risk_usd = abs(float(ent["units"])) * D / max(entry_price,1e-12)

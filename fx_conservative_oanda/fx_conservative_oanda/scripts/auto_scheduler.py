@@ -21,7 +21,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from fx_conservative.config import load_config
 from fx_conservative.logger import TradeLogger
-from fx_conservative.oanda_adapter import OandaAdapter
 from fx_conservative.strategy import FXConservativeLive
 from fx_conservative.risk_monitor import RiskMonitor
 from fx_conservative.diagnostics import SystemDiagnostics, generate_markdown_report
@@ -39,6 +38,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def make_adapter():
+    from fx_conservative.alpaca_adapter import AlpacaAdapter
+    return AlpacaAdapter()
+
+
 class TradingScheduler:
     """
     Scheduler automático que ejecuta trading en horarios específicos.
@@ -48,7 +52,7 @@ class TradingScheduler:
         self.config_path = config_path
         self.cfg = load_config(config_path)
         self.logger = TradeLogger(self.cfg.log_dir, self.cfg.state_path)
-        self.adp = OandaAdapter()
+        self.adp = make_adapter()
         self.strat = FXConservativeLive(self.adp, self.cfg, self.logger)
         
         # Inicializar RiskMonitor

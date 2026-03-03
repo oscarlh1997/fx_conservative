@@ -1,69 +1,35 @@
-# Configuración mejorada con parámetros optimizados
-pairs: [EURUSD, GBPUSD, AUDUSD, NZDUSD, USDJPY, USDCHF, USDCAD]
+# Slightly more conservative preset for Alpaca US equities.
 
-# Indicadores de tendencia (más conservadores)
+pairs: [SPY, QQQ, IWM, DIA]
+
 ema_fast: 50
 ema_slow: 200
 donchian_n: 20
-adx_thresh: 25.0  # MEJORADO: Subido de 20 a 25 para tendencias más fuertes
-
-# RSI para pullbacks
+adx_thresh: 25.0
 rsi_len: 2
 rsi_low: 5.0
 rsi_high: 95.0
 
-# Gestión de stops (optimizado para reducir pérdidas)
-atr_stop_mult: 1.8  # MEJORADO: Aumentado de 1.5 a 1.8 para dar más espacio
-atr_trail_mult: 3.5  # MEJORADO: Aumentado de 3.0 a 3.5 para no cerrar prematuramente
-tp_R: 2.5  # MEJORADO: Aumentado de 2.0 a 2.5 para mejor risk/reward
+atr_stop_mult: 1.8
+atr_trail_mult: 3.5
+tp_R: 2.5
 
-# Gestión de riesgo (MÁS CONSERVADORA)
-risk_per_trade: 0.002  # MEJORADO: Reducido de 0.0025 (0.25%) a 0.002 (0.20%)
-total_risk_cap: 0.008  # MEJORADO: Reducido de 0.010 (1.0%) a 0.008 (0.8%)
-max_gross_leverage: 1.5  # MEJORADO: Reducido de 2.0 a 1.5
+risk_per_trade: 0.0020
+total_risk_cap: 0.0080
+max_gross_leverage: 1.2
 
-# Control de correlación
 correl_window: 90
-correl_threshold: 0.75  # MEJORADO: Más estricto (0.80 -> 0.75)
+correl_threshold: 0.75
+max_positions: 4
 
-# Límites de posiciones
-max_positions: 4  # MEJORADO: Reducido de 5 a 4 para menor exposición
-
-# Timezone y horarios
 alignment_tz: America/New_York
-daily_alignment_hour: 17
+daily_alignment_hour: 16
 
-# Archivos y logs
 log_dir: logs
 state_path: state/state.json
 events_file: config/events.csv
 
-# Spreads teóricos para backtest (actualizados)
-spreads:
-  EURUSD: 0.00008  # 0.8 pips
-  GBPUSD: 0.00010  # 1.0 pip
-  AUDUSD: 0.00008  # 0.8 pips
-  NZDUSD: 0.00012  # 1.2 pips
-  USDJPY: 0.008    # 0.8 pips
-  USDCHF: 0.00010  # 1.0 pip
-  USDCAD: 0.00010  # 1.0 pip
-
-# Carry tilt (opcional - dejar vacío si no se usa)
+spreads: {}
 carry_tilt: {}
+enable_event_blackout: false
 
-# Control de eventos macro
-enable_event_blackout: true
-
-# NUEVOS: Parámetros de monitoreo de riesgo
-risk_monitor:
-  enabled: true
-  max_drawdown_pct: 0.12  # Detener si DD > 12%
-  min_sharpe: 0.6  # Alerta si Sharpe < 0.6
-  lookback_days: 30
-
-# NUEVOS: Parámetros de validación de señales
-signal_validation:
-  min_volatility_pct: 0.0005  # ATR mínimo como % del precio
-  min_adx_multiplier: 1.25  # ADX debe ser 25% mayor que el umbral
-  min_breakout_strength: 0.15  # Breakout debe ser 15% de ATR
-  min_volume_pct: 0.30  # Volumen mínimo 30% del promedio

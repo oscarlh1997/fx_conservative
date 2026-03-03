@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from fx_conservative.config import load_config
 from fx_conservative.logger import TradeLogger
-from fx_conservative.oanda_adapter import OandaAdapter
 from fx_conservative.strategy import FXConservativeLive
 from fx_conservative.risk_monitor import RiskMonitor
 import pandas as pd
@@ -24,8 +23,9 @@ def main():
     cfg = load_config("config/config_optimized.yaml")
     logger = TradeLogger(cfg.log_dir, cfg.state_path)
     
-    # Conectar a OANDA
-    adp = OandaAdapter()
+    # Conectar a Alpaca (acciones)
+    from fx_conservative.alpaca_adapter import AlpacaAdapter
+    adp = AlpacaAdapter()
     strat = FXConservativeLive(adp, cfg, logger)
     
     # Inicializar RiskMonitor
