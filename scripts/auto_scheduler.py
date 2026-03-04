@@ -1,0 +1,360 @@
+# -*- coding: utf-8 -*-
+"""
+Scheduler automático para trading de US equities en horarios NYSE.
+
+Este módulo permite:
+1. Ejecutar trading solo en horarios de mercado abierto (NYSE/NASDAQ)
+2. Evitar fines de semana y festivos
+3. Actualizar trailing stops periódicamente
+4. Sincronizar transacciones automáticamente
+5. Generar reportes periódicos
+"""
+import sys
+import os
+import time
+import schedule
+from datetime import datetime, time as dt_time
+import pytz
+import logging
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../fx_conservative_oanda'))
+
+from fx_conservative.config import load_config
+from fx_conservative.logger import TradeLogger
+from fx_conservative.strategy import FXConservativeLive
+from fx_conservative.risk_monitor import RiskMonitor
+from fx_conservative.diagnostics import SystemDiagnostics, generate_markdown_report
+import pandas as pd
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/scheduler.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+def make_adapter():
+    from fx_conservative.alpaca_adapter import AlpacaAdapter
+    return AlpacaAdapter()
+
+
+class TradingScheduler:
+    """
+    Scheduler automático que ejecuta trading en horarios específicos.
+    """
+    
+    def __init__(self, config_path: str = "config/config_optimized.yaml"):
+        self.config_path = config_path
+        self.cfg = load_config(config_path)
+        self.logger = TradeLogger(self.cfg.log_dir, self.cfg.state_path)
+        self.adp = make_adapter()
+        self.strat = FXConservativeLive(self.adp, self.cfg, self.logger)
+        
+        # Inicializar RiskMonitor
+        initial_equity = self.adp.account_equity()
+        self.risk_monitor = RiskMonitor(
+            initial_equity=initial_equity,
+            max_drawdown_pct=0.12,
+            min_sharpe=0.6,
+            lookback_days=30
+        )
+        
+        # Cargar trades históricos
+        self._load_historical_trades()
+        
+        logger.info(f"✅ TradingScheduler inicializado con equity: ${initial_equity:,.2f}")
+    
+    def _load_historical_trades(self):
+        """Carga trades históricos en el RiskMonitor."""
+        try:
+            trades_df = pd.read_csv(os.path.join(self.cfg.log_dir, "trades.csv"))
+            if not trades_df.empty:
+                for _, trade in trades_df.iterrows():
+                    self.risk_monitor.add_trade(
+                        pnl=trade['pnl_usd'],
+                        r_multiple=trade['r_multiple'],
+                        duration_days=trade['hold_days'],
+                        pair=trade['pair'],
+                        side=trade['side'],
+                        timestamp=pd.to_datetime(trade['exit_ts'])
+                    )
+                logger.info(f"📊 Cargados {len(trades_df)} trades históricos")
+        except FileNotFoundError:
+            logger.info("ℹ️  No hay trades históricos")
+    
+    def is_forex_market_open(self) -> bool:
+        """
+        Verifica si el mercado de US equities está abierto.
+        NYSE/NASDAQ opera Lun-Vie 09:30-16:00 ET (hora de Nueva York).
+        Este método es conservador: detecta días de la semana en UTC.
+        Para festivos exactos, se recomienda consultar el calendario de Alpaca.
+        """
+        now_utc = datetime.now(pytz.UTC)
+        now_et = now_utc.astimezone(pytz.timezone("America/New_York"))
+
+        # Fin de semana
+        if now_et.weekday() >= 5:  # 5=Sábado, 6=Domingo
+            return False
+
+        # Fuera de horario de mercado (09:30 - 16:00 ET)
+        market_open = dt_time(9, 30)
+        market_close = dt_time(16, 0)
+        current_time = now_et.time()
+
+        return market_open <= current_time <= market_close
+
+    def is_safe_trading_time(self) -> bool:
+        """
+        Verifica si es un horario seguro para emitir señales/operar.
+        Para US equities con estrategia diaria, ejecutamos al cierre del mercado (16:00 ET).
+        Consideramos seguro el rango 15:55-16:30 ET para capturar la vela de cierre.
+        """
+        now_utc = datetime.now(pytz.UTC)
+        now_et = now_utc.astimezone(pytz.timezone("America/New_York"))
+
+        # Fin de semana
+        if now_et.weekday() >= 5:
+            return False
+
+        # Rango seguro: 15:55 a 16:30 ET (cerca del cierre diario)
+        safe_start = dt_time(15, 55)
+        safe_end = dt_time(16, 30)
+        current_time = now_et.time()
+
+        return safe_start <= current_time <= safe_end
+    
+    def execute_daily_cycle(self):
+        """Ejecuta el ciclo diario de trading (señales + órdenes)."""
+        try:
+            # Para US equities solo operamos de lunes a viernes
+            now_utc = datetime.now(pytz.UTC)
+            if now_utc.weekday() >= 5:
+                logger.info("⏸️  Fin de semana - no se ejecuta ciclo")
+                return
+
+            # Verificar si debemos detener trading por riesgo
+            if self.risk_monitor.should_stop_trading():
+                logger.critical("🛑 STOP TRADING ACTIVADO - Riesgo crítico detectado")
+                return
+
+            logger.info("🚀 Iniciando ciclo diario de trading...")
+
+            # Sincronizar transacciones
+            sync_res = self.strat.sync_transactions()
+            logger.info(f"   Sync: {sync_res}")
+
+            # Actualizar equity en RiskMonitor
+            current_equity = self.adp.account_equity()
+            self.risk_monitor.update_equity(current_equity)
+
+            # Ejecutar ciclo de trading
+            result = self.strat.run_daily_cycle()
+            logger.info(f"   Resultado: {result}")
+
+            # Verificar alertas
+            alerts = self.risk_monitor.get_alerts()
+            if alerts:
+                logger.warning("⚠️  ALERTAS ACTIVAS:")
+                for alert in alerts:
+                    logger.warning(f"   {alert}")
+
+            logger.info("✅ Ciclo diario completado")
+
+        except Exception as e:
+            logger.error(f"❌ Error en ciclo diario: {e}", exc_info=True)
+
+    def update_trailings(self):
+        """Actualiza trailing stops de posiciones abiertas."""
+        try:
+            now_utc = datetime.now(pytz.UTC)
+            if not self.is_forex_market_open():
+                logger.info("⏸️  Mercado cerrado - no se actualizan trailings")
+                return
+
+            logger.info("🔄 Actualizando trailing stops...")
+            result = self.strat.update_all_trailings()
+            logger.info(f"   Resultado: {result}")
+
+        except Exception as e:
+            logger.error(f"❌ Error actualizando trailings: {e}", exc_info=True)
+    
+    def sync_transactions(self):
+        """Sincroniza transacciones y actualiza trades cerrados."""
+        try:
+            logger.info("🔄 Sincronizando transacciones...")
+            result = self.strat.sync_transactions()
+            logger.info(f"   Resultado: {result}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error sincronizando transacciones: {e}", exc_info=True)
+    
+    def generate_daily_report(self):
+        """Genera reporte diario de performance."""
+        try:
+            logger.info("📊 Generando reporte diario...")
+            
+            # Actualizar equity
+            current_equity = self.adp.account_equity()
+            self.risk_monitor.update_equity(current_equity)
+            
+            # Generar reporte de métricas
+            report = self.risk_monitor.export_metrics_report()
+            
+            # Guardar en archivo
+            report_path = os.path.join(self.cfg.log_dir, f"daily_report_{datetime.now().strftime('%Y%m%d')}.md")
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(report)
+            
+            logger.info(f"   Reporte guardado en: {report_path}")
+            
+            # Log métricas principales
+            metrics = self.risk_monitor.get_current_metrics()
+            logger.info(f"   Equity: ${metrics.get('current_equity', 0):,.2f}")
+            logger.info(f"   Retorno: {metrics.get('total_return_pct', 0):.2%}")
+            logger.info(f"   Sharpe: {metrics.get('sharpe_ratio', 0):.2f}")
+            logger.info(f"   DD: {metrics.get('current_drawdown_pct', 0):.2%}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error generando reporte: {e}", exc_info=True)
+    
+    def generate_diagnostic_report(self):
+        """
+        Genera informe completo de diagnóstico del sistema.
+        Detecta fallos, anomalías y oportunidades de mejora.
+        """
+        try:
+            logger.info("🔍 Generando informe de diagnóstico...")
+            
+            # Crear directorio logs si no existe
+            os.makedirs(self.cfg.log_dir, exist_ok=True)
+            
+            # Ejecutar análisis completo
+            diagnostics = SystemDiagnostics(self.cfg.log_dir)
+            report = diagnostics.analyze_all(lookback_days=30)
+            
+            # Generar reporte en Markdown
+            diagnostic_path = os.path.join(
+                self.cfg.log_dir, 
+                f"diagnostic_report_{datetime.now().strftime('%Y%m%d')}.md"
+            )
+            generate_markdown_report(report, diagnostic_path)
+            
+            # Log resumen
+            logger.info(f"   ✅ Diagnóstico completado")
+            logger.info(f"   📋 Salud del sistema: {report.system_health_score:.0f}/100")
+            logger.info(f"   🔴 Problemas críticos: {report.critical_issues}")
+            logger.info(f"   🟠 Problemas altos: {report.high_issues}")
+            logger.info(f"   🟡 Problemas medios: {report.medium_issues}")
+            logger.info(f"   📄 Reporte guardado en: {diagnostic_path}")
+            
+            # Alertar si hay problemas críticos
+            if report.critical_issues > 0:
+                logger.warning("⚠️  SE DETECTARON PROBLEMAS CRÍTICOS - REVISAR REPORTE URGENTEMENTE")
+            
+        except Exception as e:
+            logger.error(f"❌ Error generando diagnóstico: {e}", exc_info=True)
+    
+    def setup_schedule(self):
+        """
+        Configura el schedule de tareas automáticas para US equities.
+
+        Programación (horas UTC):
+        - Ciclo de trading: 21:05 UTC (≈ 16:05 ET / cierre NYSE)
+        - Trailing stops: 13:30 UTC (apertura) y 19:00 UTC (mid-session)
+        - Sincronización: Cada 2 horas en horario laboral UTC
+        - Reporte diario: 21:30 UTC diario
+        - Diagnóstico semanal: Lunes 08:00 UTC
+        """
+        # Ciclo principal: 5 minutos después del cierre NYSE (16:00 ET = 21:00 UTC estándar)
+        schedule.every().day.at("21:05").do(self.execute_daily_cycle)
+
+        # Actualización de trailing stops (apertura y media sesión)
+        schedule.every().day.at("13:30").do(self.update_trailings)  # NYSE open
+        schedule.every().day.at("19:00").do(self.update_trailings)  # mid-session
+
+        # Sincronización de transacciones cada 2 horas en horario de mercado
+        for hour in ["13:00", "15:00", "17:00", "19:00", "21:00", "23:00"]:
+            schedule.every().day.at(hour).do(self.sync_transactions)
+
+        # Reporte diario (tras el ciclo)
+        schedule.every().day.at("21:30").do(self.generate_daily_report)
+
+        # Diagnóstico completo semanal
+        schedule.every().monday.at("08:00").do(self.generate_diagnostic_report)
+
+        logger.info("📅 Schedule configurado (US equities):")
+        logger.info("   - Trading: 21:05 UTC (≈ 16:05 ET) diario")
+        logger.info("   - Trailing: 13:30 UTC (apertura) y 19:00 UTC")
+        logger.info("   - Sync: Cada 2 horas (13:00-23:00 UTC)")
+        logger.info("   - Reporte: 21:30 UTC diario")
+        logger.info("   - Diagnóstico: Lunes 08:00 UTC semanal")
+    
+    def run(self):
+        """
+        Inicia el scheduler y lo mantiene corriendo.
+        """
+        logger.info("=" * 60)
+        logger.info("🤖 TRADING SCHEDULER INICIADO")
+        logger.info("=" * 60)
+        
+        # Configurar schedule
+        self.setup_schedule()
+        
+        # Mostrar próximas tareas
+        logger.info("\n📋 Próximas tareas programadas:")
+        for job in schedule.jobs[:5]:
+            logger.info(f"   - {job}")
+        
+        logger.info("\n⏰ Esperando próxima ejecución... (Ctrl+C para detener)\n")
+        
+        # Loop principal
+        try:
+            while True:
+                schedule.run_pending()
+                time.sleep(60)  # Verificar cada minuto
+                
+        except KeyboardInterrupt:
+            logger.info("\n\n🛑 Scheduler detenido por el usuario")
+            logger.info("=" * 60)
+
+
+def main():
+    """Punto de entrada principal."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Trading Scheduler Automático")
+    parser.add_argument(
+        "--config",
+        default="config/config_optimized.yaml",
+        help="Ruta al archivo de configuración"
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Ejecuta un ciclo de test inmediato"
+    )
+    
+    args = parser.parse_args()
+    
+    # Crear scheduler
+    scheduler = TradingScheduler(args.config)
+    
+    if args.test:
+        # Modo test: ejecuta un ciclo inmediato
+        logger.info("🧪 MODO TEST - Ejecutando ciclo inmediato")
+        scheduler.execute_daily_cycle()
+        scheduler.update_trailings()
+        scheduler.generate_daily_report()
+        logger.info("✅ Test completado")
+    else:
+        # Modo normal: inicia el scheduler
+        scheduler.run()
+
+
+if __name__ == "__main__":
+    main()

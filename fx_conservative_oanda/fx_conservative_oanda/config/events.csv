@@ -1,6 +1,0 @@
-# timestamp,desc,importance,blackout_min
-# Formato: ISO8601 en zona horaria de Nueva York (recomendado) o Madrid. El sistema detecta tz si incluyes 'Z' o un offset.
-# Ejemplos:
-2025-11-07T08:30:00-05:00,NFP (Non-Farm Payrolls),high,120
-2025-11-13T08:30:00-05:00,CPI (US),high,120
-2025-12-12T08:30:00-05:00,US PPI,medium,60
