@@ -1,0 +1,35 @@
+# Default config for Alpaca US equities.
+
+pairs: [SPY, QQQ, IWM, DIA]
+
+ema_fast: 50
+ema_slow: 200
+donchian_n: 20
+adx_thresh: 20.0
+rsi_len: 2
+rsi_low: 5.0
+rsi_high: 95.0
+
+atr_stop_mult: 1.5
+atr_trail_mult: 3.0
+tp_R: 2.0
+
+risk_per_trade: 0.0025
+total_risk_cap: 0.010
+max_gross_leverage: 1.2
+
+correl_window: 90
+correl_threshold: 0.80
+max_positions: 5
+
+alignment_tz: America/New_York
+daily_alignment_hour: 16
+
+log_dir: logs
+state_path: state/state.json
+events_file: config/events.csv
+
+spreads: {}
+carry_tilt: {}
+enable_event_blackout: false
+
