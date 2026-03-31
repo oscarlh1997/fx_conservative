@@ -1,0 +1,92 @@
+# ============================================================
+# Adaptive Forex Strategy v2 — 65.000 EUR | 15 min
+# Con mejoras: sesión, exposición, trailing progresivo, etc.
+# ============================================================
+
+# ---- Conexión IBKR ----
+ibkr_host: "127.0.0.1"
+ibkr_port: 4002
+ibkr_client_id: 2
+account_currency: EUR
+
+# ---- Timeframe ----
+granularity: "15min"
+signal_interval_minutes: 15
+trailing_interval_minutes: 10
+sync_interval_minutes: 15
+loop_sleep_seconds: 30
+min_bars_required: 200
+
+# ---- Pares forex + metales ----
+pairs_trend:
+  - EURUSD
+  - GBPUSD
+  - USDJPY
+  - AUDUSD
+  - NZDUSD
+  - EURJPY
+  - XAUUSD
+  - XAGUSD
+
+pairs_mean_reversion:
+  - EURGBP
+  - AUDNZD
+  - USDCAD
+  - USDCHF
+  - EURCHF
+  - GBPJPY
+
+# ---- Detección de régimen ----
+adx_trend_threshold: 20
+adx_range_threshold: 18
+vol_spike_threshold: 1.5
+
+# ---- Trend Following ----
+atr_stop_mult: 1.5
+tp_R: 3.0
+atr_trail_mult: 2.5
+rsi_trend_floor: 30
+rsi_trend_ceil: 70
+
+# ---- Mean Reversion ----
+bb_period: 20
+bb_std: 1.8
+rsi_mr_low: 30
+rsi_mr_high: 70
+atr_mr_stop: 0.5
+
+# ---- Autorregulación (calibrado 65K + 15min) ----
+base_risk_per_trade: 0.003
+max_risk_per_trade: 0.006
+min_risk_per_trade: 0.001
+kelly_fraction: 0.25
+regulator_lookback: 30
+
+# ---- Circuit Breaker ----
+dd_reduce_threshold: 0.05
+dd_pause_threshold: 0.10
+pause_days: 3
+
+# ---- Portfolio ----
+max_positions: 5
+max_correlation: 0.75
+max_gross_leverage: 2.0
+
+# ---- MEJORA: Exposición por divisa ----
+max_currency_exposure: 3
+
+# ---- MEJORA: Filtro de sesión ----
+session_filter_enabled: true
+
+# ---- Horario ----
+alignment_tz: America/New_York
+daily_alignment_hour: 17
+
+# ---- Archivos ----
+log_dir: logs
+state_path: state/state.json
+
+# ---- Telegram ----
+telegram_enabled: true
+telegram_token: ""
+telegram_chat_id: ""
